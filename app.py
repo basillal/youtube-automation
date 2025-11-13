@@ -9,8 +9,10 @@ import pytz
 
 app = Flask(__name__)
 
+# YouTube API scopes
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 
+# HTML template for the web form
 HTML_TEMPLATE = """
 <!doctype html>
 <title>YouTube Uploader</title>
@@ -26,15 +28,18 @@ HTML_TEMPLATE = """
 {% endif %}
 """
 
+# Authenticate with YouTube API
 def get_authenticated_service():
     credentials = Credentials.from_authorized_user_file('token.json', SCOPES)
     return build('youtube', 'v3', credentials=credentials)
 
+# Convert YouTube Shorts URLs to normal URLs
 def convert_shorts_url(url):
     if "shorts" in url:
         return url.replace("shorts/", "watch?v=")
     return url
 
+# Download video using yt_dlp
 def download_video(url, filename="video.mp4"):
     ydl_opts = {
         'format': 'bestvideo[height<=720]+bestaudio/best[height<=720]',
@@ -42,7 +47,7 @@ def download_video(url, filename="video.mp4"):
         'merge_output_format': 'mp4',
         'noprogress': True,
         'quiet': True,
-        'cookiefile': 'cookies.txt'  # <- use your cookies
+        'cookiefile': 'cookies.txt'  # <-- your exported YouTube cookies
     }
     if os.path.exists(filename):
         os.remove(filename)
@@ -50,18 +55,21 @@ def download_video(url, filename="video.mp4"):
         info = ydl.extract_info(url, download=True)
     return filename, info['title']
 
+# Upload video to YouTube
 def upload_video(filename, title, privacy_status="private", schedule_time=None):
     youtube = get_authenticated_service()
     status = {'privacyStatus': privacy_status, 'selfDeclaredMadeForKids': False}
     if schedule_time:
         status['publishAt'] = schedule_time.isoformat()
-    body = {'snippet': {'title': title, 'description': "Uploaded via Flask app", 'categoryId': "22"},
-            'status': status}
+    body = {
+        'snippet': {'title': title, 'description': "Uploaded via Flask app", 'categoryId': "22"},
+        'status': status
+    }
     media = MediaFileUpload(filename, chunksize=-1, resumable=True)
     request = youtube.videos().insert(part=",".join(body.keys()), body=body, media_body=media)
     response = None
     while response is None:
-        status, response = request.next_chunk()
+        _, response = request.next_chunk()
     return response['id']
 
 @app.route("/", methods=["GET", "POST"])
@@ -70,17 +78,26 @@ def home():
     if request.method == "POST":
         url = convert_shorts_url(request.form["url"])
         schedule_time_str = request.form.get("schedule", "").strip()
-        filename, title = download_video(url)
 
-        if schedule_time_str:
-            local_tz = pytz.timezone("Asia/Kolkata")
-            scheduled_datetime = datetime.strptime(schedule_time_str, "%Y-%m-%d %H:%M")
-            utc_time = local_tz.localize(scheduled_datetime).astimezone(pytz.utc)
-            video_id = upload_video(filename, title, privacy_status="private", schedule_time=utc_time)
-            message = f"✅ Video scheduled successfully! Video ID: {video_id}"
-        else:
-            video_id = upload_video(filename, title, privacy_status="public")
-            message = f"✅ Video uploaded successfully! Video ID: {video_id}"
+        # Wrap in try/except to handle download/upload errors
+        try:
+            filename, title = download_video(url)
+        except Exception as e:
+            message = f"❌ Failed to download video: {str(e)}"
+            return render_template_string(HTML_TEMPLATE, message=message)
+
+        try:
+            if schedule_time_str:
+                local_tz = pytz.timezone("Asia/Kolkata")  # Change if needed
+                scheduled_datetime = datetime.strptime(schedule_time_str, "%Y-%m-%d %H:%M")
+                utc_time = local_tz.localize(scheduled_datetime).astimezone(pytz.utc)
+                video_id = upload_video(filename, title, privacy_status="private", schedule_time=utc_time)
+                message = f"✅ Video scheduled successfully! Video ID: {video_id}"
+            else:
+                video_id = upload_video(filename, title, privacy_status="public")
+                message = f"✅ Video uploaded successfully! Video ID: {video_id}"
+        except Exception as e:
+            message = f"❌ Failed to upload video: {str(e)}"
 
     return render_template_string(HTML_TEMPLATE, message=message)
 
