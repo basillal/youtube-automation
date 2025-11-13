@@ -41,7 +41,8 @@ def download_video(url, filename="video.mp4"):
         'outtmpl': filename,
         'merge_output_format': 'mp4',
         'noprogress': True,
-        'quiet': True
+        'quiet': True,
+        'cookiefile': 'cookies.txt'  # <- use your cookies
     }
     if os.path.exists(filename):
         os.remove(filename)
