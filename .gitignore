@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+
+# OAuth Credentials (DO NOT PUSH)
+client_secret.json
+token.json
+
+# IDE folders
+.vscode/
+.idea/
+
+# Flask session files
+*.session
+instance/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
