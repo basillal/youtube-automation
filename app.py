@@ -1,37 +1,35 @@
 import os
-import json
 import base64
+import json
 import traceback
 from datetime import datetime
-import pytz
-from flask import Flask, request, redirect, render_template_string, session, url_for
 
+from flask import Flask, request, redirect, render_template_string, session, url_for
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 import yt_dlp
+import pytz
 
-# ------------------ ENV SETUP ------------------
-# Allow HTTP for local testing
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # allow http for localhost
 
-# Write client_secret.json from base64 env variable
-if "CLIENT_SECRET_JSON_B64" in os.environ:
-    with open("client_secret.json", "wb") as f:
-        f.write(base64.b64decode(os.environ["CLIENT_SECRET_JSON_B64"]))
-
-# Write cookies.txt from base64 env variable (optional, for age-restricted/private videos)
-if "YT_COOKIES_B64" in os.environ:
-    with open("cookies.txt", "wb") as f:
-        f.write(base64.b64decode(os.environ["YT_COOKIES_B64"]))
-
-# ------------------ APP SETUP ------------------
+# -------- app setup --------
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET") or os.urandom(32)
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
+# -------- Decode client_secret.json and cookies.json from base64 --------
+if "CLIENT_SECRET_JSON_B64" in os.environ:
+    with open("client_secret.json", "wb") as f:
+        f.write(base64.b64decode(os.environ["CLIENT_SECRET_JSON_B64"]))
+
+if "YT_COOKIES_B64" in os.environ:
+    with open("cookies.txt", "wb") as f:
+        f.write(base64.b64decode(os.environ["YT_COOKIES_B64"]))
+
+# -------- HTML template --------
 HTML_TEMPLATE = """
 <!doctype html>
 <title>YouTube Uploader</title>
@@ -55,64 +53,16 @@ HTML_TEMPLATE = """
 {% endif %}
 """
 
-# ------------------ UTILITY FUNCTIONS ------------------
+# -------- utilities --------
 def token_exists():
     return os.path.exists("token.json")
 
-def convert_shorts_url(url):
-    return url.replace("shorts/", "watch?v=") if "shorts/" in url else url
-
-def get_authenticated_service():
-    if not token_exists():
-        raise FileNotFoundError("token.json not found. Authenticate first.")
-    credentials = Credentials.from_authorized_user_file("token.json", SCOPES)
-    return build("youtube", "v3", credentials=credentials)
-
-def download_video(url, filename="video.mp4"):
-    if os.path.exists(filename):
-        os.remove(filename)
-
-    ydl_opts = {
-        "format": "bestvideo[height<=720]+bestaudio/best",
-        "outtmpl": filename,
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "cookiefile": "cookies.txt" if os.path.exists("cookies.txt") else None
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-
-    return filename, info.get("title", "Uploaded Video")
-
-def upload_video(filename, title, privacy="private", schedule_utc=None):
-    youtube = get_authenticated_service()
-    status = {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}
-
-    if schedule_utc:
-        status["publishAt"] = schedule_utc.isoformat()
-
-    body = {
-        "snippet": {
-            "title": title,
-            "description": "Uploaded via Flask uploader",
-            "categoryId": "22"
-        },
-        "status": status
-    }
-
-    media = MediaFileUpload(filename, chunksize=-1, resumable=True)
-    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
-
-    response = None
-    while response is None:
-        _, response = request.next_chunk()
-    return response.get("id")
-
-# ------------------ OAUTH ------------------
+# -------- OAuth flow helpers --------
 def create_flow(redirect_uri):
     return Flow.from_client_secrets_file(
-        "client_secret.json", scopes=SCOPES, redirect_uri=redirect_uri
+        "client_secret.json",
+        scopes=SCOPES,
+        redirect_uri=redirect_uri
     )
 
 @app.route("/authorize")
@@ -134,17 +84,58 @@ def oauth2callback():
         flow = create_flow(redirect_uri)
         flow.state = session.get("oauth_state")
         flow.fetch_token(authorization_response=request.url)
-
         creds = flow.credentials
         with open("token.json", "w", encoding="utf-8") as f:
             f.write(creds.to_json())
-
         return redirect(url_for("home"))
     except Exception as e:
         tb = traceback.format_exc()
         return render_template_string(HTML_TEMPLATE, message=f"<pre>OAuth error:\n{tb}</pre>", token_exists=token_exists())
 
-# ------------------ ROUTES ------------------
+# -------- YouTube helpers --------
+def get_authenticated_service():
+    if not token_exists():
+        raise FileNotFoundError("token.json not found. Authenticate first.")
+    credentials = Credentials.from_authorized_user_file("token.json", SCOPES)
+    return build("youtube", "v3", credentials=credentials)
+
+def convert_shorts_url(url):
+    return url.replace("shorts/", "watch?v=") if "shorts/" in url else url
+
+def download_video(url, filename="video.mp4"):
+    if os.path.exists(filename):
+        os.remove(filename)
+
+    ydl_opts = {
+        "format": "bestvideo[height<=720]+bestaudio/best",
+        "outtmpl": filename,
+        "merge_output_format": "mp4",
+        "quiet": True,
+        "cookiefile": "cookies.txt"  # use cookies from base64 env
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+    return filename, info.get("title", "Uploaded Video")
+
+def upload_video(filename, title, privacy="private", schedule_utc=None):
+    youtube = get_authenticated_service()
+    status = {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}
+    if schedule_utc:
+        status["publishAt"] = schedule_utc.isoformat()
+    body = {
+        "snippet": {"title": title, "description": "Uploaded via Flask uploader", "categoryId": "22"},
+        "status": status
+    }
+    media = MediaFileUpload(filename, chunksize=-1, resumable=True)
+    request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+    response = None
+    while response is None:
+        _, response = request.next_chunk()
+    return response.get("id")
+
+# -------- routes --------
 @app.route("/", methods=["GET", "POST"])
 def home():
     msg = None
@@ -158,6 +149,7 @@ def home():
         url = convert_shorts_url(request.form.get("url", "").strip())
         schedule_str = request.form.get("schedule", "").strip()
 
+        # Download
         try:
             filename, title = download_video(url)
         except Exception as e:
@@ -165,6 +157,7 @@ def home():
             msg = f"❌ Download failed: {e}\n\n<pre>{tb}</pre>"
             return render_template_string(HTML_TEMPLATE, message=msg, token_exists=token_exists())
 
+        # Upload / Schedule
         try:
             if schedule_str:
                 local_tz = pytz.timezone("Asia/Kolkata")
@@ -173,7 +166,7 @@ def home():
                 video_id = upload_video(filename, title, privacy="private", schedule_utc=schedule_utc)
                 msg = f"✅ Scheduled upload! Video ID: {video_id}"
             else:
-                video_id = upload_video(filename, title, privacy="public")
+                video_id = upload_video(filename, title, privacy="public", schedule_utc=None)
                 msg = f"✅ Uploaded successfully! Video ID: {video_id}"
         except Exception as e:
             tb = traceback.format_exc()
@@ -182,10 +175,14 @@ def home():
     if token_exists() and session.get("pending_url"):
         pending_url = session.pop("pending_url")
         pending_schedule = session.pop("pending_schedule", "")
-        msg = f"Authenticated — re-submit to upload (previous URL: {pending_url})"
+        return render_template_string(
+            HTML_TEMPLATE,
+            message=f"Authenticated — re-submit to upload (previous URL: {pending_url})",
+            token_exists=token_exists()
+        )
 
     return render_template_string(HTML_TEMPLATE, message=msg, token_exists=token_exists())
 
-# ------------------ RUN ------------------
+# -------- run server --------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
