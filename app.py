@@ -20,14 +20,26 @@ app.secret_key = os.environ.get("FLASK_SECRET") or os.urandom(32)
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-# -------- Decode client_secret.json and cookies.json from base64 --------
+# -------- Decode client_secret.json and cookies.txt from base64 --------
 if "CLIENT_SECRET_JSON_B64" in os.environ:
     with open("client_secret.json", "wb") as f:
         f.write(base64.b64decode(os.environ["CLIENT_SECRET_JSON_B64"]))
 
-if "YT_COOKIES_B64" in os.environ:
-    with open("cookies.txt", "wb") as f:
-        f.write(base64.b64decode(os.environ["YT_COOKIES_B64"]))
+# Decode cookies and check format
+def write_cookies_from_env():
+    if "YT_COOKIES_B64" not in os.environ:
+        return False
+
+    decoded = base64.b64decode(os.environ["YT_COOKIES_B64"]).decode("utf-8", errors="ignore")
+    # basic check for Netscape format (first line starts with # Netscape)
+    if not decoded.startswith("# Netscape"):
+        raise ValueError("Cookies Base64 does not contain valid Netscape-format cookies. Export cookies in Netscape format, not JSON.")
+
+    with open("cookies.txt", "w", encoding="utf-8") as f:
+        f.write(decoded)
+    return True
+
+write_cookies_from_env()
 
 # -------- HTML template --------
 HTML_TEMPLATE = """
@@ -106,16 +118,24 @@ def download_video(url, filename="video.mp4"):
     if os.path.exists(filename):
         os.remove(filename)
 
+    # Ensure cookies.txt exists
+    if not os.path.exists("cookies.txt"):
+        raise FileNotFoundError("cookies.txt not found. Make sure YT_COOKIES_B64 contains valid Netscape cookies.")
+
     ydl_opts = {
         "format": "bestvideo[height<=720]+bestaudio/best",
         "outtmpl": filename,
         "merge_output_format": "mp4",
         "quiet": True,
-        "cookiefile": "cookies.txt"  # use cookies from base64 env
+        "cookiefile": "cookies.txt"  # use cookies from Base64 env
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as e:
+        # yt-dlp provides a clear error message if cookies are invalid
+        raise RuntimeError(f"Download failed: {e}")
 
     return filename, info.get("title", "Uploaded Video")
 
